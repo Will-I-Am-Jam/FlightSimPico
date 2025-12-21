@@ -99,13 +99,14 @@ static inline int8_t adc_to_axis(uint8_t channel)
     int32_t centered = (int32_t)NewValue - 2048;   // ±2048
     int32_t scaled   = centered / 16;         // ±128
     if (scaled > 126)  scaled = 127;
-    if (scaled < -126) scaled = -127;
+    if (scaled < -126) scaled = -126;
     return (int8_t)scaled;
 }
 
 /*------------- MAIN -------------*/
 int main(void)
 {
+  
   board_init();
   stdio_init_all();
 
