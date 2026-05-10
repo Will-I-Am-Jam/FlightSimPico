@@ -43,20 +43,154 @@
 #define BUTTON_PIN_X 13        // change to whichever GPIO you wired
 #define BUTTON_PIN_Y 12        // change to whichever GPIO you wired
 
+//encoder pins
+#define BUTTON_PIN_0 0        // change to whichever GPIO you wired
+#define BUTTON_PIN_1 1        // change to whichever GPIO you wired
+#define BUTTON_PIN_2 2        // change to whichever GPIO you wired
+#define BUTTON_PIN_GS 3        // change to whichever GPIO you wired
+
 static inline bool button_pressed(void)
 {
     // Active-low: returns true when the line is pulled low
     return !gpio_get(BUTTON_PIN_A);
 }
 
-static inline uint16_t get_gamepad_buttons(void)
+int binaryToDecimal(int n) {
+    int dec = 0;
+
+    // Initializing base value to 1, i.e 2^0
+    int base = 1;
+    
+    // Extracting each digits of binary number
+    // and adding corresponding exponent of 2
+    while (n) {
+        int last_digit = n % 10;
+        n = n / 10;
+
+        // Multiplying the last digit with the base value
+        // and adding it to the decimal value
+        dec += last_digit * base;
+
+        // Updating the base value by multiplying it by 2
+        base = base * 2;
+    }
+
+    return dec;
+}
+
+#define LEVER_TIME_PRESS 100
+static bool lever_up = false;
+static int lever_timer = 0;
+
+static inline uint32_t get_gamepad_buttons(void)
 {
     // Active-low: returns true when the line is pulled low
-    uint16_t b = 0;
+    uint32_t b = 0;
+    bool lever_current = lever_up;
+
+
     if (!gpio_get(BUTTON_PIN_A)) b |= GAMEPAD_BUTTON_A;  // 1 << 0
-    if (!gpio_get(BUTTON_PIN_B)) b |= GAMEPAD_BUTTON_B;  // 1 << 1
+    if (!gpio_get(BUTTON_PIN_B)){
+      lever_up = true;
+    } else {
+      lever_up = false;
+    } // 1 << 1 //lever
+
+    if (lever_up != lever_current){
+      lever_timer = LEVER_TIME_PRESS;
+    }
+
+    if (lever_timer > 0)
+    {
+      lever_timer--;
+      b |= GAMEPAD_BUTTON_1;
+    }
+    
+
     if (!gpio_get(BUTTON_PIN_X)) b |= GAMEPAD_BUTTON_X;  // 1 << 2
     if (!gpio_get(BUTTON_PIN_Y)) b |= GAMEPAD_BUTTON_Y;  // 1 << 3
+    //encoder
+    
+    int A2A1A0 = 0;
+
+    
+    if (!gpio_get(BUTTON_PIN_GS) && gpio_get(BUTTON_PIN_0) && gpio_get(BUTTON_PIN_1) && gpio_get(BUTTON_PIN_2)){
+      if (!lever_up){
+        b |= GAMEPAD_BUTTON_5;  // 1 << 2
+      } else {
+        b |= GAMEPAD_BUTTON_13;
+      }
+    } else {
+      if (!gpio_get(BUTTON_PIN_0)) A2A1A0 += 1;  // 1 << 0
+      if (!gpio_get(BUTTON_PIN_1)) A2A1A0 += 10;  // 1 << 1
+      if (!gpio_get(BUTTON_PIN_2)) A2A1A0 += 100;  // 1 << 2
+
+      int decodedNum = binaryToDecimal(A2A1A0) + 5;
+
+      if (!lever_up){
+        switch (decodedNum)
+        {
+        case 5:
+          break;
+        case 6:
+          b |= GAMEPAD_BUTTON_6;
+          break;
+        case 7:
+          b |= GAMEPAD_BUTTON_7;
+          break;
+        case 8:
+          b |= GAMEPAD_BUTTON_8;
+          break;
+        case 9:
+          b |= GAMEPAD_BUTTON_9;
+          break;
+        case 10:
+          b |= GAMEPAD_BUTTON_10;
+          break;
+        case 11:
+          b |= GAMEPAD_BUTTON_11;
+          break;
+        case 12:
+          b |= GAMEPAD_BUTTON_12;
+          break;
+        default:
+          b |= GAMEPAD_BUTTON_31;
+          break;
+        }
+      }
+
+      if (lever_up){
+        switch (decodedNum)
+        {
+        case 5:
+          break;
+        case 6:
+          b |= GAMEPAD_BUTTON_14;
+          break;
+        case 7:
+          b |= GAMEPAD_BUTTON_15;
+          break;
+        case 8:
+          b |= GAMEPAD_BUTTON_16;
+          break;
+        case 9:
+          b |= GAMEPAD_BUTTON_17;
+          break;
+        case 10:
+          b |= GAMEPAD_BUTTON_18;
+          break;
+        case 11:
+          b |= GAMEPAD_BUTTON_19;
+          break;
+        case 12:
+          b |= GAMEPAD_BUTTON_20;
+          break;
+        default:
+          b |= GAMEPAD_BUTTON_31;
+          break;
+        } 
+      }
+    }
     return b;
 }
 // ADC channel connected to potentiometer wiper (GP26 / ADC0)
@@ -89,17 +223,28 @@ void hid_task(void);
 /* ===== 2. Helper: read & scale any ADC channel ===== */
 static inline int8_t adc_to_axis(uint8_t channel)
 {
-    adc_select_input(channel);          // 0 = GP26, 1 = GP27
-    uint16_t raw = adc_read();          // 0‑4095
+    adc_select_input(channel);
+    int32_t raw = (int32_t)adc_read();     // signed
 
-    uint16_t OldRange = (3390 - 435);  
-    uint16_t NewRange = (4095 - 0);  
-    uint16_t NewValue = (((raw - 435) * NewRange) / OldRange) + 0;
+    const int32_t in_min  = 430;           // joystick low calibration
+    const int32_t in_max  = 3390;          // joystick high calibration
+    const int32_t out_min = 0;
+    const int32_t out_max = 4095;
 
-    int32_t centered = (int32_t)NewValue - 2048;   // ±2048
-    int32_t scaled   = centered / 16;         // ±128
-    if (scaled > 126)  scaled = 127;
-    if (scaled < -126) scaled = -126;
+    // Map raw -> 0..4095 using signed math
+    int32_t newValue = (raw - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+
+    // Clamp to valid ADC range BEFORE using it
+    if (newValue < out_min) newValue = out_min;
+    if (newValue > out_max) newValue = out_max;
+
+    int32_t centered = newValue - 2048;    // roughly ±2048
+    int32_t scaled   = centered / 16;      // roughly ±128
+
+    // Clamp to int8-friendly joystick range (common is -127..127)
+    if (scaled > 127)  scaled = 127;
+    if (scaled < -127) scaled = -127;
+
     return (int8_t)scaled;
 }
 
@@ -126,6 +271,22 @@ int main(void)
   gpio_init(BUTTON_PIN_Y);
   gpio_pull_up(BUTTON_PIN_Y);
   gpio_set_dir(BUTTON_PIN_Y, GPIO_IN);
+
+  gpio_init(BUTTON_PIN_0);
+  gpio_pull_up(BUTTON_PIN_0);
+  gpio_set_dir(BUTTON_PIN_0, GPIO_IN);
+
+  gpio_init(BUTTON_PIN_1);
+  gpio_pull_up(BUTTON_PIN_1);
+  gpio_set_dir(BUTTON_PIN_1, GPIO_IN);
+
+  gpio_init(BUTTON_PIN_2);
+  gpio_pull_up(BUTTON_PIN_2);
+  gpio_set_dir(BUTTON_PIN_2, GPIO_IN);
+
+  gpio_init(BUTTON_PIN_GS);
+  gpio_pull_up(BUTTON_PIN_GS);
+  gpio_set_dir(BUTTON_PIN_GS, GPIO_IN);
 
   // Initialize ADC
   adc_init();
@@ -263,10 +424,11 @@ static void send_hid_report(uint8_t report_id, uint32_t btn)
       // int8_t xaxis = (rawadc-2048)/16; //converts 0-4095 to -128 - 127
       // report.x = xaxis;
 
-      report.x = adc_to_axis(0);
-      report.y = adc_to_axis(1);
+      report.y = adc_to_axis(0);
+      report.x = adc_to_axis(1) * -1;
 
       report.buttons = get_gamepad_buttons();
+      //report.buttons = 0x80000000u;
       // if ( btn )
       // {
       //   report.hat = GAMEPAD_HAT_UP;
@@ -294,7 +456,7 @@ static void send_hid_report(uint8_t report_id, uint32_t btn)
 void hid_task(void)
 {
   // Poll every 10ms
-  const uint32_t interval_ms = 10;
+  const uint32_t interval_ms = 1;
   static uint32_t start_ms = 0;
 
   if ( board_millis() - start_ms < interval_ms) return; // not enough time
